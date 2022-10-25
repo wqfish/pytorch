@@ -6,9 +6,11 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #define CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS \
   c10_cuda_check_implementation(__FILE__, __FUNCTION__, __LINE__, false)
@@ -23,6 +25,14 @@ std::string c10_retrieve_device_side_assertion_info() {
   if (!launch_registry.enabled) {
     return "Device-side assertion tracking was not enabled.";
   }
+
+  // Hack that saves a lot of challenging sync logic.
+  // The GPU increments the number of errors it's observed and the CPU can see
+  // that happening immediately which means we can make it here before the GPU
+  // is done writing information about those errors to memory.
+  // A short pause gives it time to finish. Since something's gone wrong, this
+  // pause shouldn't affect perf.
+  std::this_thread::sleep_for(std::chrono::seconds(1));
 
   // The snapshot causes a brief block. That's okay because this function only
   // executes if something's gone wrong such that speed is no longer a priority.
@@ -42,7 +52,7 @@ std::string c10_retrieve_device_side_assertion_info() {
     // Did anything fail?
     const auto failures_found = std::min(
         assertion_data_for_device.assertion_count,
-        C10_CUDA_DEVICE_SIDE_ASSERTION_COUNT);
+        C10_CUDA_DSA_ASSERTION_COUNT);
     if (failures_found == 0) {
       continue;
     }
@@ -52,10 +62,10 @@ std::string c10_retrieve_device_side_assertion_info() {
         << " CUDA device-side assertion failures were found on GPU #"
         << device_num << "!" << std::endl;
     if (assertion_data_for_device.assertion_count >
-        C10_CUDA_DEVICE_SIDE_ASSERTION_COUNT) {
+        C10_CUDA_DSA_ASSERTION_COUNT) {
       oss << "But at least " << assertion_data_for_device.assertion_count
           << " assertion failures occurred on the device" << std::endl;
-      oss << "Adjust `C10_CUDA_DEVICE_SIDE_ASSERTION_COUNT` if you need more assertion failure info"
+      oss << "Adjust `C10_CUDA_DSA_ASSERTION_COUNT` if you need more assertion failure info"
           << std::endl;
     }
 
@@ -109,8 +119,9 @@ void c10_cuda_check_implementation(
     const int line_number,
     const bool include_device_assertions) {
   const auto cuda_error = cudaGetLastError();
-  const auto cuda_kernel_failure =
-      c10::cuda::CUDAKernelLaunchRegistry::get_singleton_ref().has_failed();
+  const auto cuda_kernel_failure = include_device_assertions
+      ? c10::cuda::CUDAKernelLaunchRegistry::get_singleton_ref().has_failed()
+      : false;
 
   if (C10_LIKELY(cuda_error == cudaSuccess && !cuda_kernel_failure)) {
     return;
@@ -124,6 +135,9 @@ void c10_cuda_check_implementation(
   check_message.append("\n");
   if (include_device_assertions) {
     check_message.append(c10_retrieve_device_side_assertion_info());
+  } else {
+    check_message.append(
+        "Device-side assertions were explicitly omitted for this error check; the error probably arose while initializing the DSA handlers.");
   }
 #endif
 
@@ -142,19 +156,18 @@ CUDAKernelLaunchRegistry::CUDAKernelLaunchRegistry()
   kernel_launches.resize(max_kernel_launches);
 }
 
+bool CUDAKernelLaunchRegistry::env_flag_set(const char* env_var_name) {
+  const char* const env_string = std::getenv(env_var_name);
+  return (env_string == nullptr) ? false : std::strcmp(env_string, "0");
+}
+
 bool CUDAKernelLaunchRegistry::check_env_for_enable_launch_stacktracing()
     const {
-  const char* const dsa_env_st = std::getenv("PYTORCH_CUDA_DSA_STACKTRACING");
-  const auto temp =
-      (dsa_env_st == nullptr) ? false : std::strcmp(dsa_env_st, "0");
-  return temp;
+  return env_flag_set("PYTORCH_CUDA_DSA_STACKTRACING");
 }
 
 bool CUDAKernelLaunchRegistry::check_env_for_dsa_enabled() const {
-  const char* const dsa_enabled = std::getenv("PYTORCH_USE_CUDA_DSA");
-  const auto temp =
-      (dsa_enabled == nullptr) ? false : std::strcmp(dsa_enabled, "0");
-  return temp;
+  return env_flag_set("PYTORCH_USE_CUDA_DSA");
 }
 
 uint32_t CUDAKernelLaunchRegistry::insert(
@@ -207,6 +220,7 @@ CUDAKernelLaunchRegistry::snapshot() const {
 
 DeviceAssertionsData* CUDAKernelLaunchRegistry::
     get_uvm_assertions_ptr_for_current_device() {
+#ifdef TORCH_USE_CUDA_DSA
   if (!enabled || !do_all_devices_support_managed_memory) {
     return nullptr;
   }
@@ -224,7 +238,7 @@ DeviceAssertionsData* CUDAKernelLaunchRegistry::
   const std::lock_guard<std::mutex> lock(gpu_alloc_mutex);
 
   // If we've already set up this GPU with managed memory, return a pointer to
-  // the managed memory. This locked path ensures that the device memory is 
+  // the managed memory. This locked path ensures that the device memory is
   // allocated only once
   if (uvm_assertions.at(device_num)) {
     return uvm_assertions.at(device_num).get();
@@ -234,7 +248,6 @@ DeviceAssertionsData* CUDAKernelLaunchRegistry::
   // system
   DeviceAssertionsData* uvm_assertions_ptr = nullptr;
 
-#ifdef TORCH_USE_CUDA_DSA
   C10_CUDA_ERROR_HANDLED(
       cudaMallocManaged(&uvm_assertions_ptr, sizeof(DeviceAssertionsData)));
   CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS;
@@ -252,7 +265,7 @@ DeviceAssertionsData* CUDAKernelLaunchRegistry::
       uvm_assertions_ptr,
       sizeof(DeviceAssertionsData),
       cudaMemAdviseSetAccessedBy,
-      0));
+      cudaCpuDeviceId));
   CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS;
 
   // Initialize the memory from the CPU; otherwise, pages may have to be created
@@ -265,9 +278,11 @@ DeviceAssertionsData* CUDAKernelLaunchRegistry::
   // Ownership and lifetime management of `uvm_assertions_ptr` now passes to the
   // uvm_assertions unique_ptr vector
   uvm_assertions.at(device_num).reset(uvm_assertions_ptr);
-#endif
 
   return uvm_assertions_ptr;
+#else
+  return nullptr;
+#endif
 }
 
 // Class needs its own implementation of this function to prevent

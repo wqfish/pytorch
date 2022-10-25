@@ -12,6 +12,8 @@
 #include <sstream>
 #include <vector>
 
+#define TORCH_USE_CUDA_DSA
+
 // Note [CHECK macro]
 // ~~~~~~~~~~~~~~~~~~
 // This is a macro so that AT_ERROR can get accurate __LINE__
@@ -30,7 +32,8 @@ class C10_CUDA_API CUDAError : public c10::Error {
 
 #define C10_CUDA_CHECK(EXPR)                                             \
   do {                                                                   \
-    /* We get the error inside of `c10_cuda_check_implementation` */     \
+    /* We get & disarm the error inside of */                            \
+    /* `c10_cuda_check_implementation` */                                \
     C10_UNUSED const cudaError_t __err = EXPR;                           \
     c10::cuda::c10_cuda_check_implementation(                            \
         __FILE__,                                                        \
@@ -79,8 +82,8 @@ class C10_CUDA_API CUDAError : public c10::Error {
 /// threads will fail silently.
 // We use a preprocessor macro here so the value will also be available in
 // the CUDA code.
-#define C10_CUDA_DEVICE_SIDE_ASSERTION_COUNT 10
-#define C10_CUDA_DEVICE_SIDE_MAX_STR_LEN 512
+#define C10_CUDA_DSA_ASSERTION_COUNT 10
+#define C10_CUDA_DSA_MAX_STR_LEN 512
 
 namespace c10 {
 namespace cuda {
@@ -97,11 +100,11 @@ C10_CUDA_API void c10_cuda_check_implementation(
 /// Held in managed memory and access by both the CPU and the GPU.
 struct DeviceAssertionData {
   /// Stringification of the assertion
-  char assertion_msg[C10_CUDA_DEVICE_SIDE_MAX_STR_LEN];
+  char assertion_msg[C10_CUDA_DSA_MAX_STR_LEN];
   /// File the assertion was in
-  char filename[C10_CUDA_DEVICE_SIDE_MAX_STR_LEN];
+  char filename[C10_CUDA_DSA_MAX_STR_LEN];
   /// Name of the function the assertion was in
-  char function_name[C10_CUDA_DEVICE_SIDE_MAX_STR_LEN];
+  char function_name[C10_CUDA_DSA_MAX_STR_LEN];
   /// Line number the assertion was at
   int line_number;
   /// Number uniquely identifying the kernel launch that triggered the assertion
@@ -117,13 +120,14 @@ struct DeviceAssertionData {
 struct DeviceAssertionsData {
   /// Total number of assertions found; a subset of thse will be recorded
   /// in `assertions`
-  int assertion_count;
+  int32_t assertion_count;
   /// An array of assertions that will be written to in a race-free manner
-  DeviceAssertionData assertions[C10_CUDA_DEVICE_SIDE_ASSERTION_COUNT];
+  DeviceAssertionData assertions[C10_CUDA_DSA_ASSERTION_COUNT];
 };
 
 /// Use to hold info about kernel launches so that we can run kernels
-/// asynchronously and still associate launches with assertion failures
+/// asynchronously and still associate launches with device-side
+/// assertion failures
 struct CUDAKernelLaunchInfo {
   /// Filename of the code where the kernel was launched from
   const char* launch_filename;
@@ -141,7 +145,7 @@ struct CUDAKernelLaunchInfo {
   /// Stream the kernel was launched on
   int32_t stream;
   /// A number that uniquely identifies the kernel launch
-  uint32_t generation_number;
+  uint64_t generation_number;
 };
 
 /// Circular buffer used to hold information about kernel launches
@@ -152,12 +156,12 @@ class C10_CUDA_API CUDAKernelLaunchRegistry {
   /// Assume that this is the max number of kernel launches that might ever be
   /// enqueued across all streams on a single device
   static constexpr int max_kernel_launches = 1024;
-  /// Void deleter for UVM/managed memory pointers
+  /// Deleter for UVM/managed memory pointers
   static void uvm_deleter(DeviceAssertionsData* uvm_assertions_ptr);
   /// How many kernel launch infos we've inserted. Used to ensure that circular
   /// queue doesn't provide false information by always increasing, but also to
   /// mark where we are inserting into the queue
-  uint32_t generation_number = 0;
+  uint64_t generation_number = 0;
   /// Shared mutex between writer and accessor to ensure multi-threaded safety.
   mutable std::mutex read_write_mutex;
   /// Used to ensure prevent race conditions in GPU memory allocation
@@ -186,6 +190,7 @@ class C10_CUDA_API CUDAKernelLaunchRegistry {
   static int get_device_compute_capability(const int device_num);
   static bool check_if_all_devices_support_managed_memory();
   const bool do_all_devices_support_managed_memory = false;
+  static bool env_flag_set(const char* env_var_name);
   bool check_env_for_enable_launch_stacktracing() const;
   bool check_env_for_dsa_enabled() const;
 
@@ -240,11 +245,13 @@ class C10_CUDA_API CUDAKernelLaunchRegistry {
     C10_CUDA_KERNEL_LAUNCH_CHECK();                                   \
   } while (0)
 
-// Each kernel launched with TORCH_KERNEL_LAUNCH
+// Each kernel launched with TORCH_DSA_KERNEL_LAUNCH
 // requires the same input arguments. We introduce the following macro to
 // standardize these.
 #define TORCH_DSA_KERNEL_ARGS                             \
   c10::cuda::DeviceAssertionsData *const assertions_data, \
       uint32_t assertion_caller_id
 
+// This macro can be used to pass the DSA arguments onward to another
+// function
 #define TORCH_DSA_KERNEL_ARGS_PASS assertions_data, assertion_caller_id

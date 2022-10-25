@@ -11,26 +11,26 @@ namespace cuda {
 static __device__ void dstrcpy(char* const dst, const char* const src) {
   int i = 0;
   // Copy string from source to destination, ensuring that it
-  // isn't longer than `C10_CUDA_DEVICE_SIDE_MAX_STR_LEN-1`
-  for (; src[i] != '\0' && i < C10_CUDA_DEVICE_SIDE_MAX_STR_LEN - 1; i++) {
+  // isn't longer than `C10_CUDA_DSA_MAX_STR_LEN-1`
+  for (; src[i] != '\0' && i < C10_CUDA_DSA_MAX_STR_LEN - 1; i++) {
     dst[i] = src[i];
   }
   // If the loop terminated before `i` meets the condition below, then
   // `dst` ends with a null-terminator from `src`. Otherwise, the loop
   // reached maximum iterations and we add our own null-terminator to
   // `dst`
-  if (i == C10_CUDA_DEVICE_SIDE_MAX_STR_LEN - 1) {
+  if (i == C10_CUDA_DSA_MAX_STR_LEN - 1) {
     *dst = '\0';
   }
 }
 
 __device__ __noinline__ void dsa_add_new_assertion_failure(
     DeviceAssertionsData* assertions_data,
-    const char* assertion_msg0,
-    const char* filename0,
-    const char* function_name0,
-    const int line_number0,
-    const uint32_t caller0,
+    const char* assertion_msg,
+    const char* filename,
+    const char* function_name,
+    const int line_number,
+    const uint32_t caller,
     const dim3 block_id,
     const dim3 thread_id) {
   // `assertions_data` may be nullptr if device-side assertion checking
@@ -41,23 +41,29 @@ __device__ __noinline__ void dsa_add_new_assertion_failure(
   }
 
   // Atomically increment so other threads can fail at the same time
+  // Note that incrementing this means that the CPU can observe that
+  // a failure has happened and can begin to respond before we've
+  // written information about that failure out to the buffer.
   const auto nid = atomicAdd(&(assertions_data->assertion_count), 1);
 
-  if (nid > C10_CUDA_DEVICE_SIDE_ASSERTION_COUNT) {
-    // At this point we're ran out of assertion buffer space
-    // we could print a message about this, but that'd get
+  if (nid >= C10_CUDA_DSA_ASSERTION_COUNT) {
+    // At this point we're ran out of assertion buffer space.
+    // We could print a message about this, but that'd get
     // spammy if a lot of threads did it, so we just silently
     // ignore any other assertion failures. In most cases the
     // failures will all probably be analogous anyway.
     return;
   }
 
+  // Write information about the assertion failure to memory.
+  // Note that this occurs only after the `assertion_count`
+  // increment broadcasts that there's been a problem.
   auto& self = assertions_data->assertions[nid];
-  dstrcpy(self.assertion_msg, assertion_msg0);
-  dstrcpy(self.filename, filename0);
-  dstrcpy(self.function_name, function_name0);
-  self.line_number = line_number0;
-  self.caller = caller0;
+  dstrcpy(self.assertion_msg, assertion_msg);
+  dstrcpy(self.filename, filename);
+  dstrcpy(self.function_name, function_name);
+  self.line_number = line_number;
+  self.caller = caller;
   self.block_id[0] = block_id.x;
   self.block_id[1] = block_id.y;
   self.block_id[2] = block_id.z;
@@ -71,7 +77,6 @@ __device__ __noinline__ void dsa_add_new_assertion_failure(
 // assertion failure.
 // NOTE: This assumes that `assertions_data` and  `assertion_caller_id` are
 //       arguments of the kernel and therefore accessible.
-// NOTE: `condition` is evaluated twice if the condition fails.
 #define CUDA_KERNEL_ASSERT2(condition)                                   \
   do {                                                                   \
     if (C10_UNLIKELY(!(condition))) {                                    \
