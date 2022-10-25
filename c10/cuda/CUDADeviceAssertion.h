@@ -48,17 +48,7 @@ __device__ __noinline__ void dsa_add_new_assertion_failure(
     // we could print a message about this, but that'd get
     // spammy if a lot of threads did it, so we just silently
     // ignore any other assertion failures. In most cases the
-    // failures will all probably analogous anyway.
-
-    // Problematically, if we return right away, then thousands
-    // of threads will hit `__trap()` all at once before the
-    // 10s of threads writing errors to UVM finish doing so. The
-    // result is that we can't actually see error messages.
-    // Therefore, we delay until those threads are done writing.
-    while (assertions_data->assertion_failure_written <
-           assertions_data->assertion_count) {
-    }
-    // Okay, all data is written. Let's start blowing things up.
+    // failures will all probably be analogous anyway.
     return;
   }
 
@@ -74,10 +64,6 @@ __device__ __noinline__ void dsa_add_new_assertion_failure(
   self.thread_id[0] = thread_id.x;
   self.thread_id[1] = thread_id.y;
   self.thread_id[2] = thread_id.z;
-
-  // Atomically increment the number of errors written so
-  // other threads can exit their spin locks
-  atomicAdd(&(assertions_data->assertion_failure_written), 1);
 }
 
 // Emulates a kernel assertion. The assertion won't stop the kernel's progress,
@@ -86,25 +72,24 @@ __device__ __noinline__ void dsa_add_new_assertion_failure(
 // NOTE: This assumes that `assertions_data` and  `assertion_caller_id` are
 //       arguments of the kernel and therefore accessible.
 // NOTE: `condition` is evaluated twice if the condition fails.
-#define CUDA_KERNEL_ASSERT2(condition)                                     \
-  do {                                                                     \
-    if (C10_UNLIKELY(!(condition))) {                                      \
-      /* Has an atomic element so threads can fail at the same time */     \
-      c10::cuda::dsa_add_new_assertion_failure(                            \
-          assertions_data,                                                 \
-          C10_STRINGIZE(condition),                                        \
-          __FILE__,                                                        \
-          __FUNCTION__,                                                    \
-          __LINE__,                                                        \
-          assertion_caller_id,                                             \
-          blockIdx,                                                        \
-          threadIdx);                                                      \
-                                                                           \
-      /* We could evaluate `condition` a second time so CUDA prints a nice \
-         message; however, if `condition` has side-effects this could be   \
-         problematic. Instead, we just fail. */                            \
-      __trap();                                                            \
-    }                                                                      \
+#define CUDA_KERNEL_ASSERT2(condition)                                   \
+  do {                                                                   \
+    if (C10_UNLIKELY(!(condition))) {                                    \
+      /* Has an atomic element so threads can fail at the same time */   \
+      c10::cuda::dsa_add_new_assertion_failure(                          \
+          assertions_data,                                               \
+          C10_STRINGIZE(condition),                                      \
+          __FILE__,                                                      \
+          __FUNCTION__,                                                  \
+          __LINE__,                                                      \
+          assertion_caller_id,                                           \
+          blockIdx,                                                      \
+          threadIdx);                                                    \
+      /* Now that the kernel has failed we early exit the kernel, but */ \
+      /* otherwise keep going and rely on the host to check UVM and */   \
+      /* determine we've had a problem */                                \
+      return;                                                            \
+    }                                                                    \
   } while (false)
 #else
 #define CUDA_KERNEL_ASSERT2(condition) assert(condition)

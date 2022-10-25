@@ -10,6 +10,9 @@
 #include <stdexcept>
 #include <string>
 
+#define CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS \
+  c10_cuda_check_implementation(__FILE__, __FUNCTION__, __LINE__, false)
+
 namespace c10 {
 namespace cuda {
 
@@ -18,7 +21,7 @@ std::string c10_retrieve_device_side_assertion_info() {
 #ifdef TORCH_USE_CUDA_DSA
   const auto& launch_registry = CUDAKernelLaunchRegistry::get_singleton_ref();
   if (!launch_registry.enabled) {
-    return "Device-side assertion tracking was not enabled."
+    return "Device-side assertion tracking was not enabled.";
   }
 
   // The snapshot causes a brief block. That's okay because this function only
@@ -83,7 +86,7 @@ std::string c10_retrieve_device_side_assertion_info() {
         oss << "  Stream kernel was launched on = " << launch_info.stream
             << std::endl;
         oss << "  Backtrace of kernel launch site = ";
-        if (launch_info.launch_stacktrace) {
+        if (launch_registry.gather_launch_stacktrace) {
           oss << "Launch stacktracing disabled." << std::endl;
         } else {
           oss << "\n" << launch_info.launch_stacktrace << std::endl;
@@ -105,18 +108,18 @@ void c10_cuda_check_implementation(
     const char* function_name,
     const int line_number,
     const bool include_device_assertions) {
-  // We retrieve the error here in order to keep CUDA data types out of
-  // CUDAException.h thereby simplifying including it in other files
-  const cudaError_t err = cudaGetLastError();
+  const auto cuda_error = cudaGetLastError();
+  const auto cuda_kernel_failure =
+      c10::cuda::CUDAKernelLaunchRegistry::get_singleton_ref().has_failed();
 
-  if (C10_LIKELY(err == cudaSuccess)) {
+  if (C10_LIKELY(cuda_error == cudaSuccess && !cuda_kernel_failure)) {
     return;
   }
 
   std::string check_message;
 #ifndef STRIP_ERROR_MESSAGES
-  check_message.append("CUDA error: ");
-  check_message.append(cudaGetErrorString(err));
+  check_message.append("CUDA API error: ");
+  check_message.append(cudaGetErrorString(cuda_error));
   check_message.append(c10::cuda::get_cuda_check_suffix());
   check_message.append("\n");
   if (include_device_assertions) {
@@ -142,12 +145,16 @@ CUDAKernelLaunchRegistry::CUDAKernelLaunchRegistry()
 bool CUDAKernelLaunchRegistry::check_env_for_enable_launch_stacktracing()
     const {
   const char* const dsa_env_st = std::getenv("PYTORCH_CUDA_DSA_STACKTRACING");
-  return (dsa_env_st == nullptr) ? false : std::strcmp(dsa_env_st, "0");
+  const auto temp =
+      (dsa_env_st == nullptr) ? false : std::strcmp(dsa_env_st, "0");
+  return temp;
 }
 
 bool CUDAKernelLaunchRegistry::check_env_for_dsa_enabled() const {
   const char* const dsa_enabled = std::getenv("PYTORCH_USE_CUDA_DSA");
-  return (dsa_enabled == nullptr) ? false : std::strcmp(dsa_enabled, "0");
+  const auto temp =
+      (dsa_enabled == nullptr) ? false : std::strcmp(dsa_enabled, "0");
+  return temp;
 }
 
 uint32_t CUDAKernelLaunchRegistry::insert(
@@ -204,14 +211,21 @@ DeviceAssertionsData* CUDAKernelLaunchRegistry::
     return nullptr;
   }
 
-  // Need a lock here so there's not race-condition on creating the new device
-  // assertions buffer
-  const std::lock_guard<std::mutex> lock(read_write_mutex);
-
   const auto device_num = get_device_id();
 
   // If we've already set up this GPU with managed memory, return a pointer to
-  // the managed memory
+  // the managed memory. This is a lock-free quick-return path.
+  if (uvm_assertions.at(device_num)) {
+    return uvm_assertions.at(device_num).get();
+  }
+
+  // Need a lock here so there's not race-condition on creating the new device
+  // assertions buffer
+  const std::lock_guard<std::mutex> lock(gpu_alloc_mutex);
+
+  // If we've already set up this GPU with managed memory, return a pointer to
+  // the managed memory. This locked path ensures that the device memory is 
+  // allocated only once
   if (uvm_assertions.at(device_num)) {
     return uvm_assertions.at(device_num).get();
   }
@@ -223,14 +237,14 @@ DeviceAssertionsData* CUDAKernelLaunchRegistry::
 #ifdef TORCH_USE_CUDA_DSA
   C10_CUDA_ERROR_HANDLED(
       cudaMallocManaged(&uvm_assertions_ptr, sizeof(DeviceAssertionsData)));
-  c10_cuda_check_implementation(__FILE__, __FUNCTION__, __LINE__, false);
+  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS;
 
   C10_CUDA_ERROR_HANDLED(cudaMemAdvise(
       uvm_assertions_ptr,
       sizeof(DeviceAssertionsData),
       cudaMemAdviseSetPreferredLocation,
       cudaCpuDeviceId));
-  c10_cuda_check_implementation(__FILE__, __FUNCTION__, __LINE__, false);
+  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS;
 
   // GPU will establish direct mapping of data in CPU memory, no page faults
   // will be generated
@@ -239,7 +253,7 @@ DeviceAssertionsData* CUDAKernelLaunchRegistry::
       sizeof(DeviceAssertionsData),
       cudaMemAdviseSetAccessedBy,
       0));
-  c10_cuda_check_implementation(__FILE__, __FUNCTION__, __LINE__, false);
+  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS;
 
   // Initialize the memory from the CPU; otherwise, pages may have to be created
   // on demand. We think that UVM documentation indicates that first access may
@@ -261,7 +275,7 @@ DeviceAssertionsData* CUDAKernelLaunchRegistry::
 int CUDAKernelLaunchRegistry::get_device_count() {
   int device_count = -1;
   C10_CUDA_ERROR_HANDLED(cudaGetDeviceCount(&device_count));
-  c10_cuda_check_implementation(__FILE__, __FUNCTION__, __LINE__, false);
+  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS;
   return device_count;
 }
 
@@ -270,7 +284,7 @@ int CUDAKernelLaunchRegistry::get_device_count() {
 int CUDAKernelLaunchRegistry::get_device_id() {
   int device = -1;
   C10_CUDA_ERROR_HANDLED(cudaGetDevice(&device));
-  c10_cuda_check_implementation(__FILE__, __FUNCTION__, __LINE__, false);
+  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS;
   return device;
 }
 
@@ -281,7 +295,7 @@ int CUDAKernelLaunchRegistry::get_device_compute_capability(
   int compute_capability = -1;
   C10_CUDA_ERROR_HANDLED(cudaDeviceGetAttribute(
       &compute_capability, cudaDevAttrComputeCapabilityMajor, device_num));
-  c10_cuda_check_implementation(__FILE__, __FUNCTION__, __LINE__, false);
+  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS;
   return compute_capability;
 }
 
@@ -316,14 +330,22 @@ CUDAKernelLaunchRegistry& CUDAKernelLaunchRegistry::get_singleton_ref() {
 
 int CUDAKernelLaunchRegistry::gpus_interacted_with() const {
   int gpu_count = 0;
-  for (const auto& x :
-       CUDAKernelLaunchRegistry::get_singleton_ref().uvm_assertions) {
+  for (const auto& x : uvm_assertions) {
     if (x) {
       gpu_count++;
     }
   }
 
   return gpu_count;
+}
+
+bool CUDAKernelLaunchRegistry::has_failed() const {
+  for (const auto& x : uvm_assertions) {
+    if (x && x->assertion_count > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 } // namespace cuda
