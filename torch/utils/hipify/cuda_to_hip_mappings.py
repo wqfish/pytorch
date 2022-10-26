@@ -4128,6 +4128,7 @@ CUDA_IDENTIFIER_MAP = collections.OrderedDict(
             "cudaStreamGetPriority",
             ("hipStreamGetPriority", CONV_STREAM, API_RUNTIME, HIP_UNSUPPORTED),
         ),
+        ("cudaCpuDeviceId", ("hipCpuDeviceId", CONV_TYPE, API_RUNTIME)),
         ("cudaStreamDefault", ("hipStreamDefault", CONV_TYPE, API_RUNTIME)),
         ("cudaStreamNonBlocking", ("hipStreamNonBlocking", CONV_TYPE, API_RUNTIME)),
         ("cudaDeviceSynchronize", ("hipDeviceSynchronize", CONV_DEVICE, API_RUNTIME)),
