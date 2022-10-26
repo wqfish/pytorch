@@ -2,6 +2,7 @@
 
 set(C10_CUDA_ALL_TEST_FILES
     impl/CUDATest.cpp
+    impl/CUDAAssertionsTest.cu
 )
 if(BUILD_TEST)
   foreach(test_src ${C10_CUDA_ALL_TEST_FILES})
