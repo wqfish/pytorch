@@ -15,7 +15,7 @@
 using ::testing::HasSubstr;
 
 const auto max_assertions_failure_str = "Assertion failure " +
-    std::to_string(C10_CUDA_DEVICE_SIDE_ASSERTION_COUNT - 1);
+    std::to_string(C10_CUDA_DSA_ASSERTION_COUNT - 1);
 
 /**
  * Device kernel that takes a single integer parameter as argument and
