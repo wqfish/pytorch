@@ -12,7 +12,9 @@
 #include <sstream>
 #include <vector>
 
+#ifdef CUDART_VERSION
 #define TORCH_USE_CUDA_DSA
+#endif
 
 // Note [CHECK macro]
 // ~~~~~~~~~~~~~~~~~~
