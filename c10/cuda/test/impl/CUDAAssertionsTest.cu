@@ -23,7 +23,7 @@ const auto max_assertions_failure_str = "Assertion failure " +
  */
 __global__ void cuda_always_fail_assertion_kernel(
     const int a,
-    CUDA_KERNEL_ASSERT_ARGS) {
+    TORCH_DSA_KERNEL_ARGS) {
   CUDA_KERNEL_ASSERT2(a != a);
 }
 
@@ -33,7 +33,7 @@ __global__ void cuda_always_fail_assertion_kernel(
  */
 __global__ void cuda_always_succeed_assertion_kernel(
     const int a,
-    CUDA_KERNEL_ASSERT_ARGS) {
+    TORCH_DSA_KERNEL_ARGS) {
   CUDA_KERNEL_ASSERT2(a == a);
 }
 
@@ -45,7 +45,7 @@ __global__ void cuda_always_succeed_assertion_kernel(
  */
 __global__ void cuda_wait_a_bit_then_fail_kernel(
     const clock_t clock_count,
-    CUDA_KERNEL_ASSERT_ARGS) {
+    TORCH_DSA_KERNEL_ARGS) {
   const auto start_clock = clock();
   clock_t clock_offset = 0;
   while (clock_offset < clock_count) {
@@ -63,7 +63,7 @@ __global__ void cuda_multiple_vars_always_fail_assertion_kernel(
     const int b,
     const int c,
     const int d,
-    CUDA_KERNEL_ASSERT_ARGS) {
+    TORCH_DSA_KERNEL_ARGS) {
   int i = a + b + c + d;
   if (i != 0) {
     CUDA_KERNEL_ASSERT2(i == -i);
@@ -83,7 +83,7 @@ __global__ void cuda_multiple_vars_always_fail_assertion_kernel(
 __global__ void cuda_device_assertions_fail_on_thread_block_kernel(
     const int bad_thread,
     const int bad_block,
-    CUDA_KERNEL_ASSERT_ARGS) {
+    TORCH_DSA_KERNEL_ARGS) {
   if (threadIdx.x == bad_thread && blockIdx.x == bad_block) {
     CUDA_KERNEL_ASSERT2(false); // This comparison necessarily needs to fail
   }
@@ -109,7 +109,7 @@ void success_msg(std::string function_name) {
 void cuda_device_assertions_1_var_test() {
   running_msg(__FUNCTION__);
   const auto stream = c10::cuda::getStreamFromPool();
-  TORCH_KERNEL_LAUNCH(
+  TORCH_DSA_KERNEL_LAUNCH(
       cuda_always_fail_assertion_kernel,
       1, /* Blocks */
       1, /* Threads */
@@ -156,7 +156,7 @@ void cuda_device_assertions_1_var_test() {
 void cuda_device_assertions_catches_stream() {
   running_msg(__FUNCTION__);
   const auto stream = c10::cuda::getStreamFromPool();
-  TORCH_KERNEL_LAUNCH(
+  TORCH_DSA_KERNEL_LAUNCH(
       cuda_multiple_vars_always_fail_assertion_kernel,
       1, /* Blocks */
       1, /* Threads */
@@ -211,7 +211,7 @@ void cuda_device_assertions_catches_stream() {
 void cuda_device_assertions_catches_thread_and_block_and_device() {
   running_msg(__FUNCTION__);
   const auto stream = c10::cuda::getStreamFromPool();
-  TORCH_KERNEL_LAUNCH(
+  TORCH_DSA_KERNEL_LAUNCH(
       cuda_device_assertions_fail_on_thread_block_kernel,
       1024, /* Blocks */
       128, /* Threads */
@@ -260,7 +260,7 @@ void cuda_device_assertions_catches_thread_and_block_and_device() {
 void cuda_device_assertions_multiple_writes_from_same_block() {
   running_msg(__FUNCTION__);
   const auto stream = c10::cuda::getStreamFromPool();
-  TORCH_KERNEL_LAUNCH(
+  TORCH_DSA_KERNEL_LAUNCH(
       cuda_always_fail_assertion_kernel,
       1, /* Blocks */
       128, /* Threads */
@@ -306,7 +306,7 @@ void cuda_device_assertions_multiple_writes_from_same_block() {
 void cuda_device_assertions_multiple_writes_from_multiple_blocks() {
   running_msg(__FUNCTION__);
   const auto stream = c10::cuda::getStreamFromPool();
-  TORCH_KERNEL_LAUNCH(
+  TORCH_DSA_KERNEL_LAUNCH(
       cuda_always_fail_assertion_kernel,
       10, /* Blocks */
       1, /* Threads */
@@ -369,7 +369,7 @@ void cuda_device_assertions_multiple_writes_from_blocks_and_threads() {
     while (!run_threads) {
     }
 
-    TORCH_KERNEL_LAUNCH(
+    TORCH_DSA_KERNEL_LAUNCH(
         cuda_always_fail_assertion_kernel,
         10, /* Blocks */
         128, /* Threads */
@@ -432,7 +432,7 @@ void cuda_device_assertions_multiple_writes_from_2_streams() {
   constexpr auto wait_for1 = seconds * clock_speed / 2;
   constexpr auto wait_for2 = seconds * clock_speed;
 
-  TORCH_KERNEL_LAUNCH(
+  TORCH_DSA_KERNEL_LAUNCH(
       cuda_always_fail_assertion_kernel,
       1, /* Blocks */
       1, /* Threads */
@@ -440,7 +440,7 @@ void cuda_device_assertions_multiple_writes_from_2_streams() {
       stream1,
       wait_for1);
 
-  TORCH_KERNEL_LAUNCH(
+  TORCH_DSA_KERNEL_LAUNCH(
       cuda_always_fail_assertion_kernel,
       1, /* Blocks */
       1, /* Threads */
@@ -500,7 +500,7 @@ void cuda_device_assertions_from_2_processes() {
     // This is the parent process, that will call an assertion failure.
     // This should execute before the child process.
     // We are achieving this by putting the child process to sleep.
-    TORCH_KERNEL_LAUNCH(
+    TORCH_DSA_KERNEL_LAUNCH(
         cuda_always_fail_assertion_kernel,
         1, /* Blocks */
         1, /* Threads */
@@ -524,7 +524,7 @@ void cuda_device_assertions_from_2_processes() {
     // We put it to sleep for next 2 seconds, to make sure that the parent has
     // asserted a failure already.
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-    TORCH_KERNEL_LAUNCH(
+    TORCH_DSA_KERNEL_LAUNCH(
         cuda_always_succeed_assertion_kernel,
         1, /* Blocks */
         1, /* Threads */
@@ -569,7 +569,7 @@ void cuda_device_assertions_on_multiple_gpus() {
 
   // Okay, we have 2 devices. Let's use them to launch some kernels
   c10::cuda::set_device(0);
-  TORCH_KERNEL_LAUNCH(
+  TORCH_DSA_KERNEL_LAUNCH(
       cuda_wait_a_bit_then_fail_kernel,
       1, /* Blocks */
       1, /* Threads */
@@ -578,7 +578,7 @@ void cuda_device_assertions_on_multiple_gpus() {
       wait_for1);
 
   c10::cuda::set_device(1);
-  TORCH_KERNEL_LAUNCH(
+  TORCH_DSA_KERNEL_LAUNCH(
       cuda_wait_a_bit_then_fail_kernel,
       1, /* Blocks */
       1, /* Threads */
