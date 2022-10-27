@@ -180,7 +180,11 @@ uint32_t CUDAKernelLaunchRegistry::insert(
   if (!enabled) {
     return 0;
   }
+
+  const auto backtrace = gather_launch_stacktrace ? c10::get_backtrace() : "";
+
   const std::lock_guard<std::mutex> lock(read_write_mutex);
+
   const auto my_gen_number = generation_number++;
   // TODO: It would probably be good to get a stack trace here so that
   // we can better indicate which launch caused the failure.
@@ -188,7 +192,7 @@ uint32_t CUDAKernelLaunchRegistry::insert(
       launch_filename,
       launch_function,
       launch_linenum,
-      gather_launch_stacktrace ? c10::get_backtrace() : "",
+      backtrace,
       kernel_name,
       get_device_id(),
       stream_id,
