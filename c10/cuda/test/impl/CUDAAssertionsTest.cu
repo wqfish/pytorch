@@ -6,7 +6,6 @@
 #include <c10/cuda/CUDAFunctions.h>
 #include <c10/cuda/CUDAStream.h>
 
-#include <sys/wait.h>
 #include <chrono>
 #include <iostream>
 #include <string>
