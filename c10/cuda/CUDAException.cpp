@@ -24,6 +24,8 @@ std::string c10_retrieve_device_side_assertion_info() {
   const auto& launch_registry = CUDAKernelLaunchRegistry::get_singleton_ref();
   if (!launch_registry.enabled) {
     return "Device-side assertion tracking was not enabled.";
+  } else if (!launch_registry.do_all_devices_support_managed_memory) {
+    return "Device-side assertions disabled because not all devices support managed memory.";
   }
 
   // Hack that saves a lot of challenging sync logic.
@@ -177,7 +179,7 @@ uint32_t CUDAKernelLaunchRegistry::insert(
     const char* kernel_name,
     const int32_t stream_id) {
 #ifdef TORCH_USE_CUDA_DSA
-  if (!enabled) {
+  if (!enabled || !do_all_devices_support_managed_memory) {
     return 0;
   }
 
