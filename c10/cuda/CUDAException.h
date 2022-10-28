@@ -146,8 +146,10 @@ struct CUDAKernelLaunchInfo {
   int device;
   /// Stream the kernel was launched on
   int32_t stream;
+#ifdef TORCH_USE_CUDA_DSA
   /// A number that uniquely identifies the kernel launch
   uint64_t generation_number;
+#endif
 };
 
 /// Circular buffer used to hold information about kernel launches
