@@ -13,6 +13,25 @@
 
 using ::testing::HasSubstr;
 
+
+/**
+ * Device kernel that takes mulitple integer parameters as arguments and
+ * will always trigger a device side assertion.
+ */
+__global__ void cuda_multiple_vars_always_fail_assertion_kernel(
+    const int a,
+    const int b,
+    const int c,
+    const int d,
+    TORCH_DSA_KERNEL_ARGS) {
+  int i = a + b + c + d;
+  if (i != 0) {
+    CUDA_KERNEL_ASSERT2(i == -i);
+  } else {
+    CUDA_KERNEL_ASSERT2(i == i + 1);
+  }
+}
+
 /**
  * Device kernel that takes a single integer parameter as argument and
  * will always trigger a device side assertion.

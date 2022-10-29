@@ -13,6 +13,24 @@
 
 using ::testing::HasSubstr;
 
+
+/**
+ * Device kernel that takes 2 arguments
+ * @param bad_thread represents the thread we want to trigger assertion on.
+ * @param bad_block represents the block we want to trigger assertion on.
+ * This kernel will only trigger a device side assertion for <<bad_block,
+ * bad_thread>> pair. all the other blocks and threads pairs will basically be
+ * no-op.
+ */
+__global__ void cuda_device_assertions_fail_on_thread_block_kernel(
+    const int bad_thread,
+    const int bad_block,
+    TORCH_DSA_KERNEL_ARGS) {
+  if (threadIdx.x == bad_thread && blockIdx.x == bad_block) {
+    CUDA_KERNEL_ASSERT2(false); // This comparison necessarily needs to fail
+  }
+}
+
 /**
  * TEST: Triggering device side assertion on only 1 thread from <<<1024,128>>>
  * grid. kernel used is unique, it take 2 parameters to tell which particular
