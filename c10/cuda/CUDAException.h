@@ -146,10 +146,8 @@ struct CUDAKernelLaunchInfo {
   int device;
   /// Stream the kernel was launched on
   int32_t stream;
-#ifdef TORCH_USE_CUDA_DSA
   /// A number that uniquely identifies the kernel launch
   uint64_t generation_number;
-#endif
 };
 
 /// Circular buffer used to hold information about kernel launches
@@ -165,7 +163,9 @@ class C10_CUDA_API CUDAKernelLaunchRegistry {
   /// How many kernel launch infos we've inserted. Used to ensure that circular
   /// queue doesn't provide false information by always increasing, but also to
   /// mark where we are inserting into the queue
+#ifdef TORCH_USE_CUDA_DSA
   uint64_t generation_number = 0;
+#endif
   /// Shared mutex between writer and accessor to ensure multi-threaded safety.
   mutable std::mutex read_write_mutex;
   /// Used to ensure prevent race conditions in GPU memory allocation
