@@ -95,9 +95,9 @@ void cuda_device_assertions_from_2_processes() {
 }
 
 int main() {
-  cuda_device_assertions_from_2_processes()
+  cuda_device_assertions_from_2_processes();
 
-      return 0;
+  return 0;
 }
 
 #else
