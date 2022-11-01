@@ -9,6 +9,12 @@ on:
       - release/*
       - landchecks/*
   workflow_dispatch:
+    inputs:
+      mem-leak:
+        default: false
+        type: boolean
+        required: false
+        description: If the workflow should be run with cuda mem leak on
   workflow_call:
     inputs:
       mem-leak:
@@ -16,7 +22,6 @@ on:
         type: boolean
         required: false
         description: If the workflow should be run with cuda mem leak on
-
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}

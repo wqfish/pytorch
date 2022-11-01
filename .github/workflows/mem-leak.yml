@@ -1,4 +1,4 @@
-name: memleak
+name: CUDA Memory Leak Check
 
 on:
   pull_request:
@@ -9,8 +9,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  memleak11:
-    name: mem-leak-name
+  pull:
+    name: pull
     uses: ./.github/workflows/pull.yml
     with:
       mem-leak: true
+    secrets: inherit
+
+  trunk:
+    name: trunk
+    uses: ./.github/workflows/trunk.yml
+    with:
+      mem-leak: true
+    secrets: inherit
+
+  periodic:
+    name: trunk
+    uses: ./.github/workflows/periodic.yml
+    with:
+      mem-leak: true
+    secrets: inherit
