@@ -766,6 +766,31 @@ class TestNN(NNTestCase):
             names(s.named_parameters()),
             ['0.dummy_param', '0.l1.layer_dummy_param'])
 
+        # test remove_duplicates
+        class M(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.param1 = nn.Parameter(torch.empty(3, 3))
+                self.param2 = self.param1
+
+        m = M()
+        self.assertEqual(names(m.named_parameters()),
+                         ["param1"])
+        self.assertEqual(names(m.named_parameters(remove_duplicate=False)),
+                         ["param1", "param2"])
+
+        class M(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.mod1 = nn.Linear(3, 4, bias=False)
+                self.mod2 = self.mod1
+
+        m = M()
+        self.assertEqual(names(m.named_parameters()),
+                         ["mod1.weight"])
+        self.assertEqual(names(m.named_parameters(remove_duplicate=False)),
+                         ["mod1.weight", "mod2.weight"])
+
     def test_buffers_and_named_buffers(self):
         def names(named_buffers):
             return [k for k, _ in named_buffers]
