@@ -9,6 +9,14 @@ on:
       - release/*
       - landchecks/*
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      mem-leak:
+        default: false
+        type: boolean
+        required: false
+        description: If the workflow should be run with cuda mem leak on
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
@@ -41,6 +49,7 @@ jobs:
       build-environment: linux-focal-py3.7-gcc7
       docker-image: ${{ needs.linux-focal-py3_7-gcc7-build.outputs.docker-image }}
       test-matrix: ${{ needs.linux-focal-py3_7-gcc7-build.outputs.test-matrix }}
+      mem-leak: ${{ inputs.mem-leak }}
 
   linux-docs:
     name: linux-docs
@@ -88,6 +97,7 @@ jobs:
       build-environment: linux-focal-py3.7-clang7-asan
       docker-image: ${{ needs.linux-focal-py3_7-clang7-asan-build.outputs.docker-image }}
       test-matrix: ${{ needs.linux-focal-py3_7-clang7-asan-build.outputs.test-matrix }}
+      mem-leak: ${{ inputs.mem-leak }}
 
   linux-focal-py3_7-clang10-onnx-build:
     name: linux-focal-py3.7-clang10-onnx
@@ -109,6 +119,7 @@ jobs:
       build-environment: linux-focal-py3.7-clang10-onnx
       docker-image: ${{ needs.linux-focal-py3_7-clang10-onnx-build.outputs.docker-image }}
       test-matrix: ${{ needs.linux-focal-py3_7-clang10-onnx-build.outputs.test-matrix }}
+      mem-leak: ${{ inputs.mem-leak }}
 
   linux-bionic-py3_7-clang9-build:
     name: linux-bionic-py3.7-clang9
@@ -135,6 +146,7 @@ jobs:
       build-environment: linux-bionic-py3.7-clang9
       docker-image: ${{ needs.linux-bionic-py3_7-clang9-build.outputs.docker-image }}
       test-matrix: ${{ needs.linux-bionic-py3_7-clang9-build.outputs.test-matrix }}
+      mem-leak: ${{ inputs.mem-leak }}
 
   linux-vulkan-bionic-py3_7-clang9-build:
     name: linux-vulkan-bionic-py3.7-clang9
@@ -155,6 +167,7 @@ jobs:
       build-environment: linux-vulkan-bionic-py3.7-clang9
       docker-image: ${{ needs.linux-vulkan-bionic-py3_7-clang9-build.outputs.docker-image }}
       test-matrix: ${{ needs.linux-vulkan-bionic-py3_7-clang9-build.outputs.test-matrix }}
+      mem-leak: ${{ inputs.mem-leak }}
 
   linux-bionic-cuda11_6-py3_10-gcc7-build:
     name: linux-bionic-cuda11.6-py3.10-gcc7
@@ -183,6 +196,7 @@ jobs:
       build-environment: linux-bionic-cuda11.6-py3.10-gcc7
       docker-image: ${{ needs.linux-bionic-cuda11_6-py3_10-gcc7-build.outputs.docker-image }}
       test-matrix: ${{ needs.linux-bionic-cuda11_6-py3_10-gcc7-build.outputs.test-matrix }}
+      mem-leak: ${{ inputs.mem-leak }}
 
   linux-focal-py3-clang7-mobile-build:
     name: linux-focal-py3-clang7-mobile-build
@@ -226,6 +240,7 @@ jobs:
       build-environment: linux-bionic-py3_7-clang8-xla
       docker-image: ${{ needs.linux-bionic-py3_7-clang8-xla-build.outputs.docker-image }}
       test-matrix: ${{ needs.linux-bionic-py3_7-clang8-xla-build.outputs.test-matrix }}
+      mem-leak: ${{ inputs.mem-leak }}
 
   win-vs2019-cpu-py3-build:
     name: win-vs2019-cpu-py3
@@ -248,6 +263,7 @@ jobs:
       build-environment: win-vs2019-cpu-py3
       cuda-version: cpu
       test-matrix: ${{ needs.win-vs2019-cpu-py3-build.outputs.test-matrix }}
+      mem-leak: ${{ inputs.mem-leak }}
 
   win-vs2019-cuda11_6-py3-build:
     if: github.event_name == 'pull_request'

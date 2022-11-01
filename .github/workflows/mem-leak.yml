@@ -1,0 +1,16 @@
+name: memleak
+
+on:
+  pull_request:
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
+  cancel-in-progress: true
+
+jobs:
+  memleak11:
+    name: mem-leak-name
+    uses: ./.github/workflows/pull.yml
+    with:
+      mem-leak: true
