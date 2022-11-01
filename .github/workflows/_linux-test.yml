@@ -126,7 +126,7 @@ jobs:
           DOCKER_IMAGE: ${{ inputs.docker-image }}
           XLA_CUDA: ${{ contains(inputs.build-environment, 'xla') && '0' || '' }}
           XLA_CLANG_CACHE_S3_BUCKET_NAME: ossci-compiler-clang-cache-circleci-xla
-          PYTORCH_TEST_CUDA_MEM_LEAK_CHECK: ${{ inputs.leak-check && '1' || '0'}}
+          PYTORCH_TEST_CUDA_MEM_LEAK_CHECK: ${{ inputs.mem-leak && '1' || '0'}}
         timeout-minutes: 240
         run: |
           set -x
