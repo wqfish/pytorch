@@ -2890,12 +2890,13 @@ class FallbackKernel(ExternKernelAlloc):
 
     @classmethod
     def create(cls, kernel, *args, **kwargs):
-        (
-            example_output,
-            tensor_args,
-            non_tensor_args,
-            unflatten_args,
-        ) = cls.process_kernel(kernel, *args, **kwargs)
+        with FakeTensorMode():
+            (
+                example_output,
+                tensor_args,
+                non_tensor_args,
+                unflatten_args,
+            ) = cls.process_kernel(kernel, *args, **kwargs)
 
         if isinstance(example_output, (list, tuple)):
             packed = FallbackKernel(
