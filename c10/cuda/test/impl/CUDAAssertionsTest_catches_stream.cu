@@ -92,8 +92,7 @@ void cuda_device_assertions_catches_stream() {
   }
 }
 
-int main() {
-  cuda_device_assertions_catches_stream();
 
-  return 0;
+TEST(CUDATest, cuda_device_assertions_catches_stream) {
+  cuda_device_assertions_catches_stream();
 }

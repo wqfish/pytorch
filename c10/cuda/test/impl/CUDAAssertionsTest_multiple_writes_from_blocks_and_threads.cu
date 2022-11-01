@@ -83,8 +83,7 @@ void cuda_device_assertions_multiple_writes_from_blocks_and_threads() {
   }
 }
 
-int main() {
-  cuda_device_assertions_multiple_writes_from_blocks_and_threads();
 
-  return 0;
+TEST(CUDATest, cuda_device_assertions_multiple_writes_from_blocks_and_threads) {
+  cuda_device_assertions_multiple_writes_from_blocks_and_threads();
 }

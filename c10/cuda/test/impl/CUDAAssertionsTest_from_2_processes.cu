@@ -94,16 +94,12 @@ void cuda_device_assertions_from_2_processes() {
   }
 }
 
-int main() {
+TEST(CUDATest, cuda_device_assertions_from_2_processes) {
   cuda_device_assertions_from_2_processes();
-
-  return 0;
 }
+
 
 #else
 
-int main() {
-  return 0;
-}
 
 #endif

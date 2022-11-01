@@ -77,8 +77,6 @@ void cuda_device_assertions_catches_thread_and_block_and_device() {
   }
 }
 
-int main() {
+TEST(CUDATest, cuda_device_assertions_catches_thread_and_block_and_device) {
   cuda_device_assertions_catches_thread_and_block_and_device();
-
-  return 0;
 }

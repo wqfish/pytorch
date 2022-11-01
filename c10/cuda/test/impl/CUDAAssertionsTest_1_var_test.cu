@@ -67,8 +67,6 @@ void cuda_device_assertions_1_var_test() {
   }
 }
 
-int main() {
+TEST(CUDATest, cuda_device_assertions_1_var_test) {
   cuda_device_assertions_1_var_test();
-
-  return 0;
 }

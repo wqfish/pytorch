@@ -68,8 +68,7 @@ void cuda_device_assertions_multiple_writes_from_same_block() {
   }
 }
 
-int main() {
-  cuda_device_assertions_multiple_writes_from_same_block();
 
-  return 0;
+TEST(CUDATest, cuda_device_assertions_multiple_writes_from_same_block) {
+  cuda_device_assertions_multiple_writes_from_same_block();
 }
