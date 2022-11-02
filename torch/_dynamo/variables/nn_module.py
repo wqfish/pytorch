@@ -420,51 +420,7 @@ class NNModuleVariable(VariableTracker):
                 [self] + args,
                 kwargs,
             )
-        # A loose heuristic, but seems to be generally good before we drop into the
-        # manual handling of inputs
-        elif (
-            name in module.__class__.__dict__
-            and callable(module.__class__.__dict__[name])
-            and all(
-                isinstance(x, variables.TensorVariable)
-                for x in itertools.chain(args, kwargs.values())
-            )
-        ):
-            # TODO(voz): Refactor this into a generic as_proxy() for nn module
-            # We use variations of this pattern in a few places now.
-            def make_attr(name):
-                node = tx.output.create_proxy(
-                    "get_attr",
-                    name,
-                    tuple(),
-                    {},
-                )
-                return node
 
-            # Bind in self
-            tx.output.register_attr_or_module(
-                module,
-                self.module_key,
-                self.module_key,
-                source=NNModuleSource(GetItemSource(self.source, self.module_key)),
-                **options,
-            )
-            proxy_for_mod = make_attr(self.module_key)
-            proxy_for_mod.node.meta["example_value"] = module
-
-            proxy_args, proxy_kwargs = proxy_args_kwargs(args, kwargs)
-
-            return variables.TensorVariable.create(
-                tx=tx,
-                proxy=tx.output.create_proxy(
-                    "call_method",
-                    name,
-                    args=(proxy_for_mod, *proxy_args),
-                    kwargs=proxy_kwargs,
-                    current_tx=tx,
-                ),
-                **options,
-            )
         else:
             return super().call_method(tx, name, args, kwargs)
 
@@ -542,8 +498,58 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
         from .builder import VariableBuilder
 
         options = VariableTracker.propagate(self, args, kwargs.values())
+        module = self.value # for compatibility with copypaste from NNModuleVariable
+        # A loose heuristic, but seems to be generally good before we drop into the
+        # manual handling of inputs
+        if (
+            name in module.__class__.__dict__
+            and (
+                callable(module.__class__.__dict__[name])
+                or isinstance(module.__class__.__dict__[name], classmethod)
+            )
+            and all(
+                isinstance(x, variables.TensorVariable)
+                for x in itertools.chain(args, kwargs.values())
+            )
+        ):
+            # TODO(voz): Refactor this into a generic as_proxy() for nn module
+            # We use variations of this pattern in a few places now.
+            def make_attr(name):
+                node = tx.output.create_proxy(
+                    "get_attr",
+                    name,
+                    tuple(),
+                    {},
+                )
+                return node
 
-        if name not in getattr(self.value, "__dict__", {}):
+            # Bind in self
+            module_key = "self"  #TODO(whc) hack
+            tx.output.register_attr_or_module(
+                module,
+                module_key,
+                module_key,
+                source=NNModuleSource(GetItemSource(self.source, module_key)),
+                **options,
+            )
+            proxy_for_mod = make_attr(module_key)
+            proxy_for_mod.node.meta["example_value"] = module
+
+            proxy_args, proxy_kwargs = proxy_args_kwargs(args, kwargs)
+
+            return variables.TensorVariable.create(
+                tx=tx,
+                proxy=tx.output.create_proxy(
+                    "call_method",
+                    name,
+                    args=(proxy_for_mod, *proxy_args),
+                    kwargs=proxy_kwargs,
+                    current_tx=tx,
+                ),
+                **options,
+            )
+
+        elif name not in getattr(self.value, "__dict__", {}):
             try:
                 method = inspect.getattr_static(type(self.value), name)
             except AttributeError:
@@ -571,8 +577,9 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
                 return variables.ListIteratorVariable(
                     items, mutable_local=MutableLocal(), **options
                 )
-
-            if id(method.__code__) in self._nn_module_method_ids():
+            if hasattr(method, "__code__") and id(method.__code__) in self._nn_module_method_ids():
                 unimplemented(f"UnspecializedNNModuleVariable missing {name}")
+
+
 
         return super().call_method(tx, name, args, kwargs)
