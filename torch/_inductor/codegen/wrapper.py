@@ -9,6 +9,7 @@ from .. import codecache, config, ir
 from ..utils import dynamo_utils, has_triton, sympy_dot, sympy_product
 from ..virtualized import V
 from .common import CodeGen, DeferredLine, IndentedBuffer, Kernel
+from .cpp import DTYPE_TO_ATEN
 from .triton import texpr
 
 pexpr = texpr
@@ -27,18 +28,19 @@ def buffer_reuse_key(node: ir.Buffer):
     )
 
 
-def make_buffer_reuse(old, new):
+def make_buffer_reuse(old, new, del_needed, declare, ending, as_strided):
     assert old.get_dtype() == new.get_dtype()
     del_line = ""
-    if old.get_name() not in V.graph.get_output_names():
-        del_line = f"; del {old.get_name()}"
+    if del_needed:
+        if old.get_name() not in V.graph.get_output_names():
+            del_line = f"; del {old.get_name()}"
     if old.get_size() == new.get_size() and old.get_stride() == new.get_stride():
-        return f"{new.get_name()} = {old.get_name()}{del_line}"
+        return f"{declare}{new.get_name()} = {old.get_name()}{del_line}{ending}"
 
     return (
-        f"{new.get_name()} = as_strided({old.get_name()}, "
+        f"{declare}{new.get_name()} = {as_strided}({old.get_name()}, "
         f"{V.graph.sizevars.codegen_shape_tuple(new.get_size())}, "
-        f"{V.graph.sizevars.codegen_shape_tuple(new.get_stride())}){del_line}"
+        f"{V.graph.sizevars.codegen_shape_tuple(new.get_stride())}){del_line}{ending}"
     )
 
 
@@ -52,6 +54,19 @@ def make_buffer_allocation(buffer):
         f"{V.graph.sizevars.codegen_shape_tuple(shape)}, "
         f"{V.graph.sizevars.codegen_shape_tuple(stride)}, "
         f"device='{device.type}', dtype={dtype})"
+    )
+
+
+def make_cpp_buffer_allocation(buffer):
+    # TODO: map layout and device here
+    dtype = buffer.get_dtype()
+    shape = tuple(buffer.get_size())
+    stride = tuple(buffer.get_stride())
+    return (
+        f"auto {buffer.get_name()} = at::empty_strided("
+        f"{V.graph.sizevars.codegen_shape_tuple(shape)}, "
+        f"{V.graph.sizevars.codegen_shape_tuple(stride)}, "
+        f"{DTYPE_TO_ATEN[dtype]}); "
     )
 
 
@@ -108,6 +123,13 @@ class AllocateLine(MemoryPlanningLine):
 
 
 @dataclasses.dataclass
+class CppAllocateLine(AllocateLine):
+    def codegen(self, code: IndentedBuffer):
+        assert self.node.get_name() not in V.graph.removed_buffers
+        code.writeline(make_cpp_buffer_allocation(self.node))
+
+
+@dataclasses.dataclass
 class FreeIfNotReusedLine(MemoryPlanningLine):
     node: ir.Buffer
     is_reused: bool = False
@@ -138,7 +160,38 @@ class ReuseLine(MemoryPlanningLine):
     def codegen(self, code: IndentedBuffer):
         assert self.node.get_name() not in V.graph.removed_buffers
         assert self.reused_as.get_name() not in V.graph.removed_buffers
-        code.writeline(make_buffer_reuse(self.node, self.reused_as) + "  # reuse")
+        code.writeline(
+            make_buffer_reuse(
+                self.node,
+                self.reused_as,
+                del_needed=True,
+                declare="",
+                ending="",
+                as_strided="as_strided",
+            )
+            + "  # reuse"
+        )
+
+
+@dataclasses.dataclass
+class CppReuseLine(ReuseLine):
+    node: ir.Buffer
+    reused_as: ir.Buffer
+
+    def codegen(self, code: IndentedBuffer):
+        assert self.node.get_name() not in V.graph.removed_buffers
+        assert self.reused_as.get_name() not in V.graph.removed_buffers
+        code.writeline(
+            make_buffer_reuse(
+                self.node,
+                self.reused_as,
+                del_needed=False,
+                declare="auto ",
+                ending=";",
+                as_strided="at::as_strided",
+            )
+            + "  // reuse"
+        )
 
 
 @dataclasses.dataclass
@@ -218,6 +271,20 @@ class WrapperCodeGen(CodeGen):
                     f"from {config.inductor_import}.triton_ops.batched_matmul import bmm_out as triton_bmm_out"
                 )
 
+        self.write_prefix()
+
+        for name, value in V.graph.constants.items():
+            # include a hash so our code cache gives different constants different files
+            hashed = hashlib.sha256(repr(value).encode("utf-8")).hexdigest()
+            self.header.writeline(f"{name} = None  # {hashed}")
+
+        self.allocated = set()
+        self.freed = set()
+        self.write_get_cuda_stream = functools.lru_cache(None)(
+            self.write_get_cuda_stream
+        )
+
+    def write_prefix(self):
         self.prefix.splice(
             """
 
@@ -239,17 +306,6 @@ class WrapperCodeGen(CodeGen):
                 )
             V.graph.sizevars.codegen(self.prefix, V.graph.graph_inputs)
 
-        for name, value in V.graph.constants.items():
-            # include a hash so our code cache gives different constants different files
-            hashed = hashlib.sha256(repr(value).encode("utf-8")).hexdigest()
-            self.header.writeline(f"{name} = None  # {hashed}")
-
-        self.allocated = set()
-        self.freed = set()
-        self.write_get_cuda_stream = functools.lru_cache(None)(
-            self.write_get_cuda_stream
-        )
-
     def write_get_cuda_stream(self, index):
         name = f"stream{index}"
         self.writeline(f"{name} = get_cuda_stream({index})")
@@ -257,6 +313,14 @@ class WrapperCodeGen(CodeGen):
 
     def next_kernel_name(self):
         return f"kernel{next(self._names_iter)}"
+
+    def write_allocate_line(self, buffer):
+        self.writeline(AllocateLine(buffer))
+
+    def get_deferred_line(self, name, layout):
+        return DeferredLine(
+            name, f"{name} = {layout.view.codegen_reference()}  # alias"
+        )
 
     def codegen_allocation(self, buffer):
         name = buffer.get_name()
@@ -278,20 +342,24 @@ class WrapperCodeGen(CodeGen):
             if not layout.maybe_guard_aligned():
                 V.graph.unaligned_buffers.add(name)
             self.codegen_allocation(layout.view.data)
-            allocation = DeferredLine(
-                name, f"{name} = {layout.view.codegen_reference()}  # alias"
-            )
+            allocation = self.get_deferred_line(name, layout)
             self.writeline(allocation)
             return
 
-        self.writeline(AllocateLine(buffer))
+        self.write_allocate_line(buffer)
+
+    def write_del_line(self, name):
+        self.writeline(f"del {name}")
+
+    def write_free_if_not_reused_line(self, buffer):
+        self.writeline(FreeIfNotReusedLine(buffer))
 
     def codegen_free(self, buffer):
         name = buffer.get_name()
 
         # can be freed but not reused
         if isinstance(buffer, ir.InputBuffer):
-            self.writeline(f"del {name}")
+            self.write_del_line(name)
             return
 
         if not self.can_reuse(buffer):
@@ -300,10 +368,10 @@ class WrapperCodeGen(CodeGen):
 
         layout = buffer.get_layout()
         if isinstance(layout, (ir.AliasedLayout, ir.MultiOutputLayout)):
-            self.writeline(f"del {name}")
+            self.write_del_line(name)
             return
 
-        self.writeline(FreeIfNotReusedLine(buffer))
+        self.write_free_if_not_reused_line(buffer)
 
     def can_reuse(self, buffer):
         name = buffer.get_name()
@@ -316,12 +384,24 @@ class WrapperCodeGen(CodeGen):
             return False
         return True
 
+    def write_reuse_line(self, input_buffer, output_buffer):
+        self.writeline(ReuseLine(input_buffer, output_buffer))
+
     def codegen_inplace_reuse(self, input_buffer, output_buffer):
         assert buffer_reuse_key(input_buffer) == buffer_reuse_key(output_buffer)
         self.codegen_allocation(input_buffer)
         self.freed.add(input_buffer.get_name())
         self.allocated.add(output_buffer.get_name())
-        self.writeline(ReuseLine(input_buffer, output_buffer))
+        self.write_reuse_line(input_buffer, output_buffer)
+
+    def generate_return(self, result, output_refs):
+        if output_refs:
+            result.writeline("return (" + ", ".join(output_refs) + ", )")
+        else:
+            result.writeline("return ()")
+
+    def generate_end(self, result):
+        return
 
     @dynamo_utils.dynamo_timed
     def generate(self):
@@ -352,10 +432,9 @@ class WrapperCodeGen(CodeGen):
                     result.writeline(line)
 
             output_refs = [x.codegen_reference() for x in V.graph.graph_outputs]
-            if output_refs:
-                result.writeline("return (" + ", ".join(output_refs) + ", )")
-            else:
-                result.writeline("return ()")
+            self.generate_return(result, output_refs)
+
+        self.generate_end(result)
 
         self.add_benchmark_harness(result)
 
@@ -371,8 +450,8 @@ class WrapperCodeGen(CodeGen):
         def add_fake_input(name, shape, stride, device, dtype):
             output.writeline(
                 f"{name} = rand_strided("
-                f"{V.graph.sizevars.codegen_shape_tuple(shape)}, "
-                f"{V.graph.sizevars.codegen_shape_tuple(stride)}, "
+                f"{V.graph.sizevars.codegen_python_shape_tuple(shape)}, "
+                f"{V.graph.sizevars.codegen_python_shape_tuple(stride)}, "
                 f"device='{device.type}', dtype={dtype})"
             )
 
@@ -405,6 +484,17 @@ class WrapperCodeGen(CodeGen):
     def define_kernel(self, name: str, kernel: str):
         self.header.splice(f"\n\n{name} = {kernel}")
 
+    def load_kernel(self, name: str = None, kernel: str = None, arg_types: List = None):
+        return
+
+    def wrap_kernel_call(self, name, call_args):
+        return "{}({})".format(name, ", ".join(call_args))
+
+    def generate_kernel_call(self, name, call_args):
+        self.writeline(
+            self.wrap_kernel_call(name, call_args),
+        )
+
     def call_kernel(self, name: str, kernel: Kernel):
         tmp = IndentedBuffer()
         kernel.call_kernel(self, tmp, name)
@@ -415,3 +505,138 @@ class WrapperCodeGen(CodeGen):
 
     def writeline(self, line):
         self.lines.append(line)
+
+
+class CppWrapperCodeGen(WrapperCodeGen):
+    """
+    The outer wrapper that calls the kernels.
+    """
+
+    call_func_id = count()
+
+    def __init__(self):
+        self._call_func_id = next(CppWrapperCodeGen.call_func_id)
+        super().__init__()
+
+    def write_prefix(self):
+        self.prefix.splice(
+            """
+            async_compile.wait(globals())
+            del async_compile
+            from torch.utils.cpp_extension import load_inline
+            wrapper = (
+            '''
+            #include <dlfcn.h>
+            #include <assert.h>
+            """
+        )
+        with self.prefix.indent():
+            inputs_len = len(V.graph.graph_inputs.keys())
+            output_refs = [x.codegen_reference() for x in V.graph.graph_outputs]
+            if output_refs:
+                if len(output_refs) == 1:
+                    output_types = "at::Tensor"
+                else:
+                    output_return_type = "at::Tensor"
+                    output_return_types = [output_return_type] * len(output_refs)
+                    output_return_types = ", ".join(output_return_types)
+                    output_types = f"std::tuple<{output_return_types}>"
+            else:
+                output_types = "void"
+
+            if inputs_len != 0:
+                inputs_args = ["at::Tensor"] * len(V.graph.graph_inputs.keys())
+                inputs_args = ", ".join(inputs_args)
+                inputs_args = f"std::tuple<{inputs_args}>"
+
+                self.prefix.writeline(
+                    f"{output_types} call_{self._call_func_id}({inputs_args} args) {{"
+                )
+                inputs_keys_str = ", ".join(V.graph.graph_inputs.keys())
+                self.prefix.writeline(f"at::Tensor {inputs_keys_str};")
+                self.prefix.writeline(f"std::tie({inputs_keys_str}) = args;")
+            else:
+                self.prefix.writeline(
+                    f"{output_types} call_{self._call_func_id}(std::tuple<> args) {{"
+                )
+            for name in V.graph.randomness_seeds:
+                self.prefix.writeline(f"at::Tensor {name};")
+                self.prefix.writeline(
+                    f"{name} = at::randint(std::pow(2, 31), {{}}, at::ScalarType::Long);"
+                )
+            V.graph.sizevars.codegen(self.prefix, V.graph.graph_inputs)
+
+    def write_allocate_line(self, buffer):
+        self.writeline(CppAllocateLine(buffer))
+
+    def write_del_line(self, name):
+        return
+
+    def write_free_if_not_reused_line(self, buffer):
+        return
+
+    def write_reuse_line(self, input_buffer, output_buffer):
+        self.writeline(CppReuseLine(input_buffer, output_buffer))
+
+    def get_deferred_line(self, name, layout):
+        return DeferredLine(
+            name, f"auto {name} = {layout.view.codegen_reference()};  // alias"
+        )
+
+    def get_kernel_path(self, code):
+        import os
+
+        from ..codecache import cache_dir, code_hash, cpp_compile_command
+
+        # TODO: this duplicates with CodeCache logic
+        ext = "so"
+        extra = cpp_compile_command("i", "o")
+        # \n is required to match with the CodeCache behavior
+        source_code = "\n" + code.getvalue()
+        basename = code_hash(source_code + extra)
+        subdir = os.path.join(cache_dir(), basename[1:3])
+        kernel_path = os.path.join(subdir, f"{basename}.{ext}")
+        return kernel_path
+
+    def load_kernel(self, name: str = None, kernel: str = None, arg_types: List = None):
+        kernel_path = self.get_kernel_path(kernel)
+
+        self.writeline(f'auto {name}_lib = dlopen("{kernel_path}", RTLD_NOW);')
+        self.writeline(f"assert({name}_lib != nullptr);")
+        self.writeline(f"void (*{name})({arg_types});")
+        self.writeline(f'*(void **) (&{name}) = dlsym({name}_lib, "kernel");')
+
+    def wrap_kernel_call(self, name, call_args):
+        return "{}({});".format(name, ", ".join(call_args))
+
+    def generate_return(self, result, output_refs):
+        if output_refs:
+            if len(output_refs) == 1:
+                result.writeline("return " + output_refs[0] + "; }''' )")
+            else:
+                result.writeline(
+                    "return std::make_tuple(" + ", ".join(output_refs) + "); }''' )"
+                )
+        else:
+            result.writeline("return; }''' )")
+
+    def generate_end(self, result):
+        result.splice(
+            f"""
+            module = load_inline(
+                name='inline_extension',
+                cpp_sources=[wrapper],
+                functions=['call_{self._call_func_id}'],
+                extra_cflags=['-DCPU_CAPABILITY_AVX2 -march=native -O3 -ffast-math -fno-finite-math-only -fopenmp'])
+            """
+        )
+        # Wrap the func to support setting result._boxed_call = True
+        result.splice(
+            f"""
+            def _wrap_func(f):
+                def g(args):
+                    return f(args)
+                return g
+            call = _wrap_func(module.call_{self._call_func_id})
+            """
+        )

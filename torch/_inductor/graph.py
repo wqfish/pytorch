@@ -12,7 +12,7 @@ from torch.fx.experimental.symbolic_shapes import ShapeEnv
 from torch.utils._mode_utils import no_dispatch
 
 from . import config, ir
-from .codegen.wrapper import WrapperCodeGen
+from .codegen.wrapper import CppWrapperCodeGen, WrapperCodeGen
 from .exc import (
     LoweringException,
     MissingOperatorWithDecomp,
@@ -20,7 +20,7 @@ from .exc import (
 )
 from .ir import Constant, FixedLayout, InputBuffer, TensorBox
 from .lowering import lowerings, make_fallback, needs_realized_inputs
-from .sizevars import SizeVarAllocator
+from .sizevars import CppSizeVarAllocator, SizeVarAllocator
 from .utils import dynamo_utils
 from .virtualized import V
 
@@ -84,6 +84,7 @@ class GraphLowering(torch.fx.Interpreter):
         self.randomness_seeds = []
         self.name_to_buffer = {}
         self.creation_time = time.time()
+        self._can_use_cpp_wrapper = config.cpp_wrapper
 
     def get_dtype(self, buffer_name):
         if buffer_name in self.constants:
@@ -130,7 +131,21 @@ class GraphLowering(torch.fx.Interpreter):
     def run(self, *args):
         return super().run(*args)
 
+    def disable_cpp_wrapper(self, cond):
+        self._can_use_cpp_wrapper = False
+        log.debug("Set _can_use_cpp_wrapper to False due to %s", cond)
+
+    def check_buffer_for_cpp_wrapper(self, buffer: ir.ComputedBuffer):
+        if isinstance(buffer, ir.ExternKernel):
+            self.disable_cpp_wrapper("ExternKernel")
+        if isinstance(buffer, ir.ComputedBuffer):
+            if buffer.data.get_reduction_type():
+                self.disable_cpp_wrapper("Reduction")
+
     def register_buffer(self, buffer: ir.ComputedBuffer):
+        if config.cpp_wrapper:
+            self.check_buffer_for_cpp_wrapper(buffer)
+
         name = f"buf{len(self.buffers)}"
         self.buffers.append(buffer)
         self.name_to_buffer[name] = buffer
@@ -319,10 +334,48 @@ class GraphLowering(torch.fx.Interpreter):
                 result.realize_hint()
         return result
 
+    def check_device_for_cpp_buffer(self):
+        if len(self.device_types) == 1:
+            device = self.device_types.pop()
+            if device == "cpu":
+                return
+        self.disable_cpp_wrapper("device not CPU")
+
+    def check_input_for_cpp_buffer(self):
+        for _, value in self.graph_inputs.items():
+            if value.get_dtype() != torch.float32:
+                self.disable_cpp_wrapper("inputs not FP32")
+
+    def check_output_for_cpp_buffer(self):
+        for item in self.graph_outputs:
+            if isinstance(item, ir.NoneAsConstantBuffer):
+                self.disable_cpp_wrapper("NoneAsConstantBuffer")
+
+    def check_constant_for_cpp_buffer(self):
+        if self.constants:
+            self.disable_cpp_wrapper("Constants")
+
+    def check_cpp_wrapper(self):
+        self.check_device_for_cpp_buffer()
+        self.check_input_for_cpp_buffer()
+        self.check_output_for_cpp_buffer()
+        self.check_constant_for_cpp_buffer()
+
+    def get_wrapper(self):
+        if config.cpp_wrapper:
+            self.check_cpp_wrapper()
+            if self._can_use_cpp_wrapper:
+                self.wrapper_code = CppWrapperCodeGen()
+                self.sizevars = CppSizeVarAllocator(self._shape_env)
+                return
+        self.wrapper_code = WrapperCodeGen()
+        return
+
     def codegen(self):
         from .scheduler import Scheduler
 
-        self.wrapper_code = WrapperCodeGen()
+        self.get_wrapper()
+
         self.scheduler = Scheduler(self.buffers)
         self.scheduler.codegen()
         return self.wrapper_code.generate()
